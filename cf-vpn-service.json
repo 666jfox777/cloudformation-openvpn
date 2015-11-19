@@ -1,0 +1,334 @@
+{
+    "AWSTemplateFormatVersion" : "2010-09-09",
+    "Description" : "This CloudFormation template provisions a VPN service with an EC2 instance configured with OpenVPN in each subnet, and each instance is added to an ELB. An appropriate DNS ALIAS or CNAME record should be configured to point to the ELB.",
+    "Parameters" : {
+        "InstanceAMI" : {
+            "Description" : "The EC2 AMI id to use for the OpenVPN service. Expects an Amazon Linux box, but may work with others.",
+            "Type" : "String",
+            "Default" : "ami-b5a7ea85"
+        },
+        "MinSize" : {
+            "Description" : "The minimum size of the VPN auto scaling group. Can be used for horizontal scaling.",
+            "Type" : "String",
+            "Default" : "1"
+        },
+        "MaxSize" : {
+            "Description" : "The maximum size of the VPN auto scaling group. Can be used for horizontal scaling. Always keep +1 over the MinSize.",
+            "Type" : "String",
+            "Default" : "2"
+        },
+        "InstanceType" : {
+            "Description" : "EC2 instance type. If having network speed / consistency issues, then increase this value.",
+            "Type" : "String",
+            "Default" : "c3.xlarge",
+            "AllowedValues" : [ "t2.micro", "t2.medium", "m3.large", "m3.xlarge", "m3.2xlarge", "c1.medium", "c1.xlarge", "c3.large", "c3.xlarge", "c3.2xlarge", "c3.4xlarge", "c3.8xlarge"],
+            "ConstraintDescription" : "must be a valid EC2 instance type."
+        },
+        "SSHKeyPair" : {
+            "Description" : "The SSH Key Pair to use with the auto scaling group.",
+            "Type" : "AWS::EC2::KeyPair::KeyName"
+        },
+        "S3Bucket" : {
+            "Description" : "The S3 bucket to pull the OpenVPN configuration from.",
+            "Type" : "String"
+        },
+        "Key" : {
+            "Description" : "Region / Key word, used to select which OpenVPN configuration to use.",
+            "Type" : "String"
+        },
+        "VpcID" : {
+            "Description" : "The IP Address space used by this VPC. Changing the VPC-id issues a replacement of the stack.",
+            "Type" : "String"
+        },
+        "Subnet1ID" : {
+            "Description" : "The IP Address space used by subnet 1. Changing the subnet-id issues a replacement of the stack.",
+            "Type" : "String"
+        },
+        "Subnet2ID" : {
+            "Description" : "The IP Address space used by subnet 2. Changing the subnet-id issues a replacement of the stack.",
+            "Type" : "String"
+        },
+        "Subnet3ID" : {
+            "Description" : "The IP Address space used by subnet 3. Changing the subnet-id issues a replacement of the stack.",
+            "Type" : "String"
+        },
+        "Subnet1AZ" : {
+            "Description" : "The availability zone used by subnet 1. Changing the AZ issues a replacement of the stack. Must match the AZ the subnet is actually in.",
+            "Type" : "String"
+        },
+        "Subnet2AZ" : {
+            "Description" : "The availability zone used by subnet 2. Changing the AZ issues a replacement of the stack. Must match the AZ the subnet is actually in.",
+            "Type" : "String"
+        },
+        "Subnet3AZ" : {
+            "Description" : "The availability zone used by subnet 3. Changing the AZ issues a replacement of the stack. Must match the AZ the subnet is actually in.",
+            "Type" : "String"
+        }
+    },
+    "Conditions" : {
+    },
+    "Resources" : {
+        "ElbSecurityGroup" : {
+            "Type" : "AWS::EC2::SecurityGroup",
+            "Properties" :
+            {
+                "GroupDescription" : { "Ref" : "AWS::StackName"},
+                "SecurityGroupIngress" : [ { "IpProtocol" : "tcp", "FromPort" : "1194", "ToPort" : "1194", "CidrIp" : "0.0.0.0/0"} ],
+                "VpcId" : { "Ref" : "VpcID"},
+                "Tags" : [ { "Key" : "Name", "Value" : { "Ref" : "AWS::StackName"} } ]
+            }
+        },
+        "Ec2InstanceSecurityGroup" : {
+            "Type" : "AWS::EC2::SecurityGroup",
+            "Properties" :
+            {
+                "GroupDescription" : { "Ref" : "AWS::StackName"},
+                "SecurityGroupIngress" : [ { "IpProtocol" : "tcp", "FromPort" : "1194", "ToPort" : "1194", "SourceSecurityGroupId" : {
+                    "Fn::GetAtt": [
+                        "ElbSecurityGroup",
+                        "GroupId"
+                    ]
+                }} ],
+                "VpcId" : { "Ref" : "VpcID"},
+                "Tags" : [ { "Key" : "Name", "Value" : { "Ref" : "AWS::StackName"} } ]
+            }
+        },
+        "LoadBalancer" : {
+            "Type" : "AWS::ElasticLoadBalancing::LoadBalancer",
+            "Properties" : {
+                "CrossZone" : "true",
+                "SecurityGroups" : [ { "Ref" : "ElbSecurityGroup" } ],
+                "Subnets" : [{ "Ref" : "Subnet1ID"},{ "Ref" : "Subnet2ID"},{ "Ref" : "Subnet3ID"}],
+                "Listeners" : [ { "LoadBalancerPort" : "1194", "InstancePort" : "1194", "Protocol" : "TCP" } ],
+                "HealthCheck" : {
+                    "Target" : "TCP:1194",
+                    "HealthyThreshold" : "3",
+                    "UnhealthyThreshold" : "2",
+                    "Interval" : "10",
+                    "Timeout" : "5"
+                },
+                "Tags" : [ { "Key" : "Name", "Value" : { "Ref" : "AWS::StackName"} } ]
+            }
+        },
+        "InstanceRole":{
+            "Type":"AWS::IAM::Role",
+            "Properties":{
+                "AssumeRolePolicyDocument":{
+                    "Statement":[
+                        {
+                            "Effect":"Allow",
+                            "Principal":{
+                                "Service":[
+                                    "ec2.amazonaws.com"
+                                ]
+                            },
+                            "Action":[
+                                "sts:AssumeRole"
+                            ]
+                        }
+                    ]
+                },
+                "Path":"/"
+            }
+        },
+        "RolePolicy1":{
+            "Type":"AWS::IAM::Policy",
+            "Properties":{
+                "PolicyName":"S3Download",
+                "PolicyDocument":{
+                    "Statement":[
+                        {
+                            "Action":[
+                                "s3:ListBucket"
+                            ],
+                            "Effect":"Allow",
+                            "Resource":[
+                                { "Fn::Join" : [ "", ["arn:aws:s3:::", {"Ref":"S3Bucket"} ] ] } }
+                            ]
+                        },
+                        {
+                            "Action":[
+                                "s3:Get*",
+                                "s3:List*"
+                            ],
+                            "Effect":"Allow",
+                            "Resource": [
+                                { "Fn::Join" : [ "", ["arn:aws:s3:::", {"Ref":"S3Bucket"},"/*" ] ] } }
+                            ]
+                        }
+                    ]
+                },
+                "Roles":[
+                    {
+                        "Ref":"InstanceRole"
+                    }
+                ]
+            }
+        },
+        "InstanceProfile":{
+            "Type":"AWS::IAM::InstanceProfile",
+            "Properties":{
+                "Path":"/",
+                "Roles":[
+                    {
+                        "Ref":"InstanceRole"
+                    }
+                ]
+            }
+        },
+        "AutoScalingGroup" : {
+            "Type" : "AWS::AutoScaling::AutoScalingGroup",
+            "Properties" : {
+                "AvailabilityZones" : [{ "Ref" : "Subnet1AZ"},{ "Ref" : "Subnet2AZ"},{ "Ref" : "Subnet3AZ"}],
+                "VPCZoneIdentifier" : [{ "Ref" : "Subnet1ID"},{ "Ref" : "Subnet2ID"},{ "Ref" : "Subnet3ID"}],
+                "LaunchConfigurationName" : { "Ref" : "LaunchConfig" },
+                "MinSize" : {"Ref":"MinSize"},
+                "MaxSize" : {"Ref":"MaxSize"},
+                "LoadBalancerNames" : [ { "Ref" : "LoadBalancer" } ],
+                "Tags" : [
+                    { "Key" : "Name", "Value" : { "Ref" : "AWS::StackName"}, "PropagateAtLaunch" : true }
+                ]
+            },
+            "CreationPolicy" : {
+                "ResourceSignal" : {
+                    "Count" : "1",
+                    "Timeout" : "PT15M"
+                }
+            },
+            "UpdatePolicy": {
+                "AutoScalingRollingUpdate": {
+                    "MinInstancesInService": "1",
+                    "MaxBatchSize": "1",
+                    "PauseTime" : "PT5M",
+                    "WaitOnResourceSignals": "true"
+                }
+            }
+        },
+        "LaunchConfig" : {
+            "Type" : "AWS::AutoScaling::LaunchConfiguration",
+            "Metadata" : {
+                "Comment" : "Installs OpenVPN server.",
+                "AWS::CloudFormation::Authentication": {
+                    "S3AccessCreds": {
+                        "type": "S3",
+                        "roleName": { "Ref" : "InstanceRole"},
+                        "buckets" : [{"Ref":"S3Bucket"}]
+                    }
+                },
+                "AWS::CloudFormation::Init" : {
+                    "configSets" : {
+                        "ascending" : [ "initial", "repos", "config" ]
+                    },
+                    "initial" : {
+                        "commands" : {
+                            "sudoersttypatch" : {
+                                "command" : "sed -i.bak 's/requiretty/!requiretty/g' /etc/sudoers"
+                            }
+                        },
+                        "packages" : {
+                            "yum" : {
+                                "gcc"                   : [],
+                                "make"                  : [],
+                                "tcpdump"               : [],
+                                "jq"                    : [],
+                                "telnet"                : []
+                            }
+                        }
+                    },
+                    "repos" : {
+                        "commands" : {
+                            "enableepel" : {
+                                "command" : "yum-config-manager --enable epel;"
+                            }
+                        }
+                    },
+                    "config" : {
+                        "commands" : {
+                            "ipforwarding" : {
+                                "command" : "echo '1' > /proc/sys/net/ipv4/ip_forward;sed -i.bak s/'net.ipv4.ip_forward = 0'/'net.ipv4.ip_forward = 1'/g /etc/sysctl.conf; sysctl -e -p;"
+                            },
+                            "iptables" : {
+                                "command" : "iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE;iptables -I FORWARD -i tun0 -o eth0 -j ACCEPT;iptables -I FORWARD -i eth0 -o tun0 -j ACCEPT;/sbin/service iptables save;"
+                            },
+                            "ldapconf" : {
+                                "command" : "echo 'TLS_REQCERT never' > /etc/openldap/ldap.conf"
+                            }
+                        },
+                        "packages" : {
+                            "yum" : {
+                                "openvpn"            : [],
+                                "openvpn-auth-ldap"  : [],
+                                "easy-rsa"           : [],
+                                "tcpdump"            : [],
+                                "jq"                 : [],
+                                "telnet"             : []
+                            }
+                        },
+                        "sources" : {
+                            "/etc/openvpn" : { "Fn::Join" : ["", ["https://s3-",{ "Ref" : "AWS::Region" },".amazonaws.com/",{"Ref":"S3Bucket"},"/",{ "Ref" : "Key" },"-openvpn.zip"]]}
+                        },
+                        "files" : {
+                            "/etc/cfn/cfn-hup.conf" : {
+                                "content" : { "Fn::Join" : ["", [
+                                    "[main]\n",
+                                    "stack=", { "Ref" : "AWS::StackId" }, "\n",
+                                    "region=", { "Ref" : "AWS::Region" }, "\n"
+                                ]]},
+                                "mode"    : "000400",
+                                "owner"   : "root",
+                                "group"   : "root"
+                            },
+                            "/etc/cfn/hooks.d/cfn-auto-reloader.conf" : {
+                                "content": { "Fn::Join" : ["", [
+                                    "[cfn-auto-reloader-hook]\n",
+                                    "triggers=post.update\n",
+                                    "path=Resources.LaunchConfig.Metadata.AWS::CloudFormation::Init\n",
+                                    "action=/opt/aws/bin/cfn-init -v ",
+                                    "         --stack ", { "Ref" : "AWS::StackName" },
+                                    "         --resource LaunchConfig ",
+                                    "         --region ", { "Ref" : "AWS::Region" }, "\n",
+                                    "runas=root\n"
+                                ]]}
+                            }
+                        },
+                        "services" : {
+                            "sysvinit" : {
+                                "cfn-hup" : { "enabled" : "true", "ensureRunning" : "true", "files" : ["/etc/cfn/cfn-hup.conf", "/etc/cfn/hooks.d/cfn-auto-reloader.conf"]},
+                                "openvpn" : { "enabled" : "true", "ensureRunning" : "true"}
+                            }
+                        }
+                    }
+                }
+            },
+            "Properties" : {
+                "IamInstanceProfile":{
+                    "Ref":"InstanceProfile"
+                },
+                "KeyName" : {"Ref" : "SSHKeyPair"},
+                "ImageId" :  {"Ref" : "InstanceAMI" },
+                "SecurityGroups" : [ { "Ref" : "Ec2InstanceSecurityGroup" }],
+                "InstanceType" : { "Ref" : "InstanceType" },
+                "AssociatePublicIpAddress" : true,
+                "UserData"       : { "Fn::Base64" : { "Fn::Join" : ["", [
+                    "#!/bin/bash -xe\n",
+                    "yum update -y aws-cfn-bootstrap\n",
+                    "/opt/aws/bin/cfn-init -v ",
+                    "         --stack ", { "Ref" : "AWS::StackName" },
+                    "         --resource LaunchConfig ",
+                    "         --configset ascending",
+                    "         --region ", { "Ref" : "AWS::Region" }, "\n",
+                    "/opt/aws/bin/cfn-signal -e $? ",
+                    "         --stack ", { "Ref" : "AWS::StackName" },
+                    "         --resource LaunchConfig ",
+                    "         --region ", { "Ref" : "AWS::Region" }, "\n"
+                ]]}}
+            }
+        }
+    },
+    "Outputs" : {
+        "ELB" : {
+            "Description" : "VPN ELB Endpoint.",
+            "Value" : {"Fn::GetAtt" : [ "LoadBalancer" , "DNSName" ]}
+        }
+    }
+}
