@@ -17,6 +17,31 @@
             "Type" : "String",
             "Default" : "2"
         },
+        "ScalingPolicy" : {
+            "Description" : "Set to true to use time based scaling options. This allows you to scale your VPN infrastructure based on your business hours.",
+            "Type" : "String",
+            "Default" : "false"
+        },
+        "ScaleDownMinSize" : {
+            "Description" : "The size of the VPN auto scaling group during scaledown policy hours. Can be used for horizontal scaling.",
+            "Type" : "String",
+            "Default" : "1"
+        },
+        "ScaleDownMaxSize" : {
+            "Description" : "The size of the VPN auto scaling group during scaledown policy hours. Can be used for horizontal scaling. Always keep +1 over the MinSize.",
+            "Type" : "String",
+            "Default" : "2"
+        },
+        "ScaleDownTime" : {
+            "Description" : "The cron formated time for the scaling event.",
+            "Type" : "String",
+            "Default" : "0 3 * * *"
+        },
+        "ScaleUpTime" : {
+            "Description" : "The cron formated time for the scaling event.",
+            "Type" : "String",
+            "Default" : "0 15 * * *"
+        },
         "InstanceType" : {
             "Description" : "EC2 instance type. If having network speed / consistency issues, then increase this value.",
             "Type" : "String",
@@ -32,40 +57,45 @@
             "Description" : "The S3 bucket to pull the OpenVPN configuration from.",
             "Type" : "String"
         },
+        "S3Region" : {
+            "Description" : "The S3 region for the S3 bucket used to pull the OpenVPN configuration from. Use if applicable.",
+            "Type" : "String"
+        },
         "Key" : {
             "Description" : "Region / Key word, used to select which OpenVPN configuration to use.",
             "Type" : "String"
         },
         "VpcID" : {
             "Description" : "The IP Address space used by this VPC. Changing the VPC-id issues a replacement of the stack.",
-            "Type" : "String"
+            "Type" : "AWS::EC2::VPC::Id"
         },
         "Subnet1ID" : {
             "Description" : "The IP Address space used by subnet 1. Changing the subnet-id issues a replacement of the stack.",
-            "Type" : "String"
+            "Type" : "AWS::EC2::Subnet::Id"
         },
         "Subnet2ID" : {
             "Description" : "The IP Address space used by subnet 2. Changing the subnet-id issues a replacement of the stack.",
-            "Type" : "String"
+            "Type" : "AWS::EC2::Subnet::Id"
         },
         "Subnet3ID" : {
             "Description" : "The IP Address space used by subnet 3. Changing the subnet-id issues a replacement of the stack.",
-            "Type" : "String"
+            "Type" : "AWS::EC2::Subnet::Id"
         },
         "Subnet1AZ" : {
             "Description" : "The availability zone used by subnet 1. Changing the AZ issues a replacement of the stack. Must match the AZ the subnet is actually in.",
-            "Type" : "String"
+            "Type" : "AWS::EC2::AvailabilityZone::Name"
         },
         "Subnet2AZ" : {
             "Description" : "The availability zone used by subnet 2. Changing the AZ issues a replacement of the stack. Must match the AZ the subnet is actually in.",
-            "Type" : "String"
+            "Type" : "AWS::EC2::AvailabilityZone::Name"
         },
         "Subnet3AZ" : {
             "Description" : "The availability zone used by subnet 3. Changing the AZ issues a replacement of the stack. Must match the AZ the subnet is actually in.",
-            "Type" : "String"
+            "Type" : "AWS::EC2::AvailabilityZone::Name"
         }
     },
     "Conditions" : {
+        "UseScheduledScaling" : {"Fn::Equals" : [{"Ref" : "ScalingPolicy"}, "true"]}
     },
     "Resources" : {
         "ElbSecurityGroup" : {
@@ -143,7 +173,7 @@
                             ],
                             "Effect":"Allow",
                             "Resource":[
-                                { "Fn::Join" : [ "", ["arn:aws:s3:::", {"Ref":"S3Bucket"} ] ] } }
+                                { "Fn::Join" : [ "", ["arn:aws:s3:::", {"Ref":"S3Bucket"} ] ] }
                             ]
                         },
                         {
@@ -153,7 +183,7 @@
                             ],
                             "Effect":"Allow",
                             "Resource": [
-                                { "Fn::Join" : [ "", ["arn:aws:s3:::", {"Ref":"S3Bucket"},"/*" ] ] } }
+                                { "Fn::Join" : [ "", ["arn:aws:s3:::", {"Ref":"S3Bucket"},"/*" ] ] }
                             ]
                         }
                     ]
@@ -265,7 +295,7 @@
                             }
                         },
                         "sources" : {
-                            "/etc/openvpn" : { "Fn::Join" : ["", ["https://s3-",{ "Ref" : "AWS::Region" },".amazonaws.com/",{"Ref":"S3Bucket"},"/",{ "Ref" : "Key" },"-openvpn.zip"]]}
+                            "/etc/openvpn" : { "Fn::Join" : ["", ["https://s3",{ "Ref" : "S3Region" },".amazonaws.com/",{"Ref":"S3Bucket"},"/",{ "Ref" : "Key" },"-openvpn.zip"]]}
                         },
                         "files" : {
                             "/etc/cfn/cfn-hup.conf" : {
@@ -322,6 +352,30 @@
                     "         --resource LaunchConfig ",
                     "         --region ", { "Ref" : "AWS::Region" }, "\n"
                 ]]}}
+            }
+        },
+        "ScheduledActionUp": {
+            "Type": "AWS::AutoScaling::ScheduledAction",
+            "Condition": "UseScheduledScaling",
+            "Properties": {
+                "AutoScalingGroupName": {
+                    "Ref": "AutoScalingGroup"
+                },
+                "MaxSize": {"Ref":"MaxSize"},
+                "MinSize": {"Ref":"MinSize"},
+                "Recurrence": {"Ref":"ScaleUpTime"}
+            }
+        },
+         "ScheduledActionDown": {
+            "Type": "AWS::AutoScaling::ScheduledAction",
+            "Condition": "UseScheduledScaling",
+            "Properties": {
+                "AutoScalingGroupName": {
+                    "Ref": "AutoScalingGroup"
+                },
+                "MaxSize": {"Ref":"ScaleDownMaxSize"},
+                "MinSize": {"Ref":"ScaleDownMinSize"},
+                "Recurrence": {"Ref":"ScaleDownTime"}
             }
         }
     },
